@@ -1,24 +1,39 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.media.MediaPlayer
+import android.net.Uri
+import android.os.Build
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.annotation.AttrRes
 import androidx.annotation.CallSuper
 import androidx.annotation.StyleRes
 import androidx.appcompat.widget.AppCompatImageView
+import androidx.core.content.ContextCompat.startActivity
 import androidx.core.os.postDelayed
 import androidx.core.view.isVisible
+import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaSession
+import androidx.media3.ui.PlayerNotificationManager
 import coil3.BitmapImage
+import coil3.Canvas
 import coil3.asDrawable
 import coil3.dispose
 import coil3.imageLoader
@@ -27,19 +42,37 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Precision
 import coil3.size.ViewSizeResolver
+import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.chat.ImagePart
+import com.aallam.openai.api.chat.ImagePart.ImageURL
+import com.aallam.openai.api.chat.TextPart
+import com.aallam.openai.api.http.Timeout
+import com.aallam.openai.api.model.ModelId
+import com.aallam.openai.client.OpenAI
 import com.davemorrissey.labs.subscaleview.ImageSource
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.EASE_IN_OUT_QUAD
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.EASE_OUT_QUAD
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE
 import com.github.chrisbanes.photoview.PhotoView
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
 import eu.kanade.tachiyomi.util.view.isVisibleOnScreen
+import io.ktor.util.encodeBase64
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okio.BufferedSource
 import tachiyomi.core.common.util.system.ImageUtil
+import java.io.ByteArrayOutputStream
 
 /**
  * A wrapper view for showing page image.
@@ -280,6 +313,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     setupZoom(config)
                     if (isVisibleOnScreen()) landscapeZoom(true)
                     this@ReaderPageImageView.onImageLoaded()
+                    val bitmap = this@apply.getBitmapFromView()
+                    if (bitmap != null) {
+                        sendImageToOpenAI(bitmap)
+                    }
                 }
 
                 override fun onImageLoadError(e: Exception) {
@@ -326,6 +363,96 @@ open class ReaderPageImageView @JvmOverloads constructor(
             else -> {
                 throw IllegalArgumentException("Not implemented for class ${data::class.simpleName}")
             }
+        }
+    }
+
+    private fun SubsamplingScaleImageView.getBitmapFromView(): Bitmap? {
+        val bitmapWidth = sWidth
+        val bitmapHeight = sHeight
+
+        val aspectRatio = bitmapWidth.toFloat() / bitmapHeight.toFloat()
+
+        if (bitmapWidth > 0 && bitmapHeight > 0 && aspectRatio < 0.8) {
+            val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            draw(canvas)
+            return bitmap
+        }
+        return null
+    }
+
+    fun createNotificationChannel(context: Context) {
+        val channelId = "media_playback_channel"
+        val channelName = "Reprodução de Mídia"
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val channel = NotificationChannel(
+            channelId,
+            channelName,
+            NotificationManager.IMPORTANCE_LOW,
+        )
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    @androidx.annotation.OptIn(UnstableApi::class)
+    @OptIn(DelicateCoroutinesApi::class)
+    private fun sendImageToOpenAI(bitmap: Bitmap) {
+        if (MusicPlayer.isPlaying()) {
+            return
+        }
+
+        MusicPlayer.setPlaying(true)
+
+        try {
+            val outputStream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+            val imageData = outputStream.toByteArray()
+            val openAIClient = OpenAI("{SECRET_OPENAI_TOKEN}")
+
+            val chatRequest = ChatCompletionRequest(
+                model = ModelId("gpt-4o"),
+                messages = listOf(
+                    ChatMessage(
+                        role = ChatRole.System,
+                        content = "Você é um recomendador de músicas baseado em descrições de cenas."
+                    ),
+                    ChatMessage(
+                        role = ChatRole.User,
+                        content = listOf(
+                            TextPart(
+                                text = "Com base na imagem, pense na cena e sugere uma música para leitura da imagem como trilha sonora de fundo, porém sem cantor, classifique como romance, ação, suspense, terror, entre outros gêneros para achar uma musica que se encaixe."
+                            ),
+                            ImagePart(
+                                imageUrl = ImageURL(url="data:image/png;base64,${imageData.encodeBase64()}")
+                            ),
+                            TextPart(
+                                text = "Qual melhor musica que se encaixa para esse contexto? Coloque o nome entre aspas duplas."
+                            ),
+                            TextPart(
+                                text = "Exceto a música 'Clair de Lune'.."
+                            )
+                        )
+                    )
+                ),
+            )
+
+            GlobalScope.launch(Dispatchers.IO) {
+                try {
+                    val chatResponse = openAIClient.chatCompletion(chatRequest)
+                    val content = chatResponse.choices.first().message.content
+
+                    val recommendedMusic = content?.split("\"")[1]
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Tocando a musica $recommendedMusic", Toast.LENGTH_LONG).show()
+                        val player = MusicPlayer(context)
+                        player.playAudio("https://smp3play-api.vercel.app/api/song?query=$recommendedMusic")
+                    }
+                } catch (e: Exception) {
+                    MusicPlayer.setPlaying(false)
+                }
+            }
+        } catch (e: Exception) {
+            MusicPlayer.setPlaying(false)
         }
     }
 

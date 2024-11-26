@@ -107,6 +107,10 @@ android {
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+
         resources.excludes.addAll(
             listOf(
                 "kotlin-tooling-metadata.json",
@@ -280,6 +284,17 @@ dependencies {
     implementation(libs.leakcanary.plumber)
 
     testImplementation(kotlinx.coroutines.test)
+    implementation("com.aallam.openai:openai-client:3.8.2")
+    implementation("io.ktor:ktor-client-core:2.3.0") // Verifique a versão mais recente
+    implementation("io.ktor:ktor-client-cio:2.3.0") // Engine CIO, recomendado para Android
+    implementation("io.ktor:ktor-client-serialization:2.3.0") // Para usar serialização
+    implementation("io.ktor:ktor-client-plugins:2.3.0")
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
+    implementation("androidx.media3:media3-session:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("io.github.junkfood02.youtubedl-android:library:0.16.0")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.16.0")
 }
 
 androidComponents {
